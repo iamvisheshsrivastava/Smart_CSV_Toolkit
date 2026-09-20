@@ -840,6 +840,13 @@ def multi_csv_merge_ui(max_files: int = 5):
 if "expanded_columns" not in st.session_state:
     st.session_state.expanded_columns = set()
 
+def _push_history(prev_df, limit=10):
+    """Snapshot the working DataFrame so an LLM cleaning step can be undone."""
+    hist = st.session_state.setdefault("df_history", [])
+    hist.append(prev_df.copy())
+    del hist[:-limit]
+
+
 with tab2:
     st.header("Metadata Inference & Usability")
     multi_csv_merge_ui()
@@ -860,6 +867,7 @@ with tab2:
         if st.session_state.get("_final_df_seen_version") != current_version:
             st.session_state["_final_df_seen_version"] = current_version
             st.session_state.df = df.copy()
+            st.session_state.df_history = []
             st.session_state.pop("metadata_df", None)
             st.session_state["show_tree"] = False
             st.session_state["executed_actions"] = set()
@@ -984,6 +992,12 @@ with tab2:
 
             st.markdown("## 🛠️ Custom Cleaning via LLM")
 
+            _hist = st.session_state.get("df_history", [])
+            if st.button(f"↩️ Undo last cleaning step ({len(_hist)} available)", disabled=not _hist):
+                st.session_state.df = _hist.pop()
+                st.session_state["executed_actions"] = set()
+                st.rerun()
+
             use_memory = st.checkbox("📌 Use past cleaning memory (RAG)", value=True)
 
             # 🔹 Show general past suggestions immediately
@@ -1016,6 +1030,7 @@ with tab2:
                     with st.spinner("Calling LLM and applying changes..."):
                         try:
                             cleaned_df, executed_code = custom_cleaning_via_llm(user_instruction, st.session_state.df)
+                            _push_history(st.session_state.df)
                             st.session_state.df = cleaned_df
 
                             st.success("✅ Cleaning applied successfully!")
@@ -1147,6 +1162,7 @@ with tab2:
 
                                     cleaned_df, code_str = custom_cleaning_via_llm(instruction, st.session_state.df)
 
+                                    _push_history(st.session_state.df)
                                     st.session_state.df = cleaned_df
                                     st.session_state["executed_actions"].add(clicked_node)
                                     st.session_state["last_executed_code"] = code_str  

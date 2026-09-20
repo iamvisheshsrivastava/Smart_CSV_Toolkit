@@ -15,6 +15,7 @@ A matching ``OPERATION_MAP`` dictionary maps step names (as they appear in
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
 import pandas as pd
+from safe_exec import safe_exec
 import numpy as np
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, Binarizer
 from sklearn.impute import SimpleImputer
@@ -187,7 +188,7 @@ def llm_data_cleaning(data: pd.DataFrame, params: Any) -> pd.DataFrame:
             "RandomOverSampler": RandomOverSampler,
             "RandomUnderSampler": RandomUnderSampler
         }
-        exec(code, global_vars, local_vars)
+        safe_exec(code, global_vars, local_vars)
         return local_vars["df"]
     except Exception as e:
         raise RuntimeError(

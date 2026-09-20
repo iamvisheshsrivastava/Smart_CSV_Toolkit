@@ -1,4 +1,5 @@
 import logging
+from safe_exec import safe_exec
 import os
 import pandas as pd
 import numpy as np
@@ -487,7 +488,7 @@ PROMPT LENGTH (characters): {len(user_instruction) + len(formatted_df)}
 
         local_vars = {"df": df.copy()}
 
-        exec(code_str, global_vars, local_vars)
+        safe_exec(code_str, global_vars, local_vars)
 
         return local_vars["df"], code_str
 
@@ -543,7 +544,7 @@ def execute_plot_code(code: str, df: pd.DataFrame):
 
     try:
         with contextlib.redirect_stdout(io.StringIO()):
-            exec(code, global_vars, local_vars)
+            safe_exec(code, global_vars, local_vars)
 
         fig = plt.gcf()
         fig.set_size_inches(6, 4)  
