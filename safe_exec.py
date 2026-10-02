@@ -18,10 +18,10 @@ FORBIDDEN_NAMES = {
     "os", "sys", "subprocess", "socket", "shutil", "importlib", "builtins",
 }
 FORBIDDEN_ATTRS = {
-    "system", "popen", "eval", "read_pickle", "to_pickle", "to_csv", "to_excel",
+    "system", "popen", "eval", "query", "read_pickle", "to_pickle", "to_csv", "to_excel",
     "to_json", "to_parquet", "to_sql", "to_feather", "to_hdf", "to_html",
     "to_clipboard", "read_clipboard", "savefig", "download", "getenv", "environ",
-    "load_model", "from_pretrained",
+    "load_model", "from_pretrained", "format", "format_map",
 }
 _SAFE_BUILTIN_NAMES = [
     "abs", "all", "any", "bool", "dict", "enumerate", "filter", "float", "int",

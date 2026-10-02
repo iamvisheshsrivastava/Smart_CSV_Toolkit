@@ -21,6 +21,13 @@ def test_allows_normal_cleaning():
     "pd.read_csv('x')",
     "df.to_csv('x')",
     "eval('1')",
+    # issue #19: str.format()/format_map() can traverse dunder attributes
+    # (e.g. "{0.__class__.__init__.__globals__}".format(df)) as plain string
+    # content, invisible to the AST attribute/name checks.
+    "'{0.__class__.__mro__}'.format(df)",
+    "'{0.__class__}'.format_map({0: df})",
+    "df.query('1==1')",
+    "df.eval('1==1')",
 ])
 def test_blocks_dangerous(code):
     with pytest.raises(Exception):
