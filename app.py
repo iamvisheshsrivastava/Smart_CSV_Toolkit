@@ -35,6 +35,7 @@ import uuid
 import json
 import tempfile
 import contextlib
+import zipfile
 from io import BytesIO
 from pathlib import Path
 from uuid import uuid4
@@ -56,7 +57,7 @@ from streamlit_agraph import agraph, Config
 import streamlit.components.v1 as components
 
 from pipeline_logic import run_pipeline
-from metadata_inference import analyze_dataframe, custom_cleaning_via_llm, execute_plot_code
+from metadata_inference import analyze_dataframe, custom_cleaning_via_llm, execute_plot_code, generate_quality_report
 from cleaningDecisionTree import render_pyvis_tree, render_agraph_tree
 from pyvis.network import Network
 from DB.log_to_db import log_session, log_file, log_event
@@ -325,6 +326,46 @@ with tab1:
         num_rows = st.slider("Rows to display", min_value=5, max_value=len(df), value=10, key="cleaner_preview_rows")
         st.dataframe(df.head(num_rows), use_container_width=True)
 
+        with st.expander("📋 Or replay a saved recipe (.json)"):
+            st.caption(
+                "Upload a recipe exported from a previous run (see 'Download Recipe' "
+                "below) to re-apply the exact same sequence of steps to this CSV, "
+                "without reconfiguring the checkboxes below. LLM Data Cleaning steps "
+                "embed the code the LLM generated last time, so replay is fully "
+                "offline/deterministic — no new LLM call is made."
+            )
+            recipe_file = st.file_uploader("Upload Recipe", type=["json"], key="recipe_uploader")
+            if recipe_file is not None:
+                try:
+                    recipe = json.loads(recipe_file.getvalue().decode("utf-8"))
+                    recipe_steps = recipe.get("steps", []) if isinstance(recipe, dict) else recipe
+                    recipe_columns = recipe.get("columns") if isinstance(recipe, dict) else None
+
+                    if recipe_columns:
+                        missing_cols = [c for c in recipe_columns if c not in df.columns]
+                        if missing_cols:
+                            st.warning(
+                                f"⚠️ This recipe was built for different columns. "
+                                f"Missing from this CSV: {missing_cols}. Steps referencing "
+                                f"them may fail or be skipped."
+                            )
+
+                    st.json(recipe_steps)
+                    if st.button("▶️ Apply Recipe to this CSV", key="apply_recipe_btn"):
+                        try:
+                            cleaned_df = run_pipeline(df.copy(), recipe_steps)
+                            st.session_state.cleaned_df = cleaned_df
+                            st.session_state.last_recipe_steps = recipe_steps
+                            st.session_state.last_recipe_columns = list(df.columns)
+                            st.success("✅ Recipe applied!")
+                            if "session_id" in st.session_state:
+                                log_event(st.session_state.session_id, "recipe_replayed",
+                                           f"{len(recipe_steps)} step(s)")
+                        except (ValueError, RuntimeError) as e:
+                            st.warning(f"Some recipe steps were skipped or failed:\n\n{e}")
+                except (json.JSONDecodeError, AttributeError, TypeError) as e:
+                    st.error(f"❌ Could not parse recipe file: {e}")
+
         st.header("Step 2: Select and Configure Processing Steps")
         steps = []
         sections = config.get("processing", {})
@@ -456,7 +497,9 @@ with tab1:
 
                 try:
                     cleaned_df = run_pipeline(df.copy(), steps)
-                    st.session_state.cleaned_df = cleaned_df 
+                    st.session_state.cleaned_df = cleaned_df
+                    st.session_state.last_recipe_steps = steps
+                    st.session_state.last_recipe_columns = list(df.columns)
                     st.success("✅ Cleaning complete!")
 
                 except (ValueError, RuntimeError) as e:
@@ -481,9 +524,131 @@ with tab1:
                     st.dataframe(visible_rows, use_container_width=True, height=min(max(len(visible_rows) * row_height, min_height), max_height))
 
                 csv = sanitize_for_csv(cleaned_df).to_csv(index=False).encode("utf-8")
-                st.download_button("Download Cleaned CSV", data=csv, file_name="cleaned_output.csv", mime="text/csv")
+                dl_col1, dl_col2 = st.columns(2)
+                dl_col1.download_button("Download Cleaned CSV", data=csv, file_name="cleaned_output.csv", mime="text/csv")
 
-    
+                if "last_recipe_steps" in st.session_state:
+                    recipe_payload = {
+                        "columns": st.session_state.get("last_recipe_columns", []),
+                        "steps": st.session_state["last_recipe_steps"],
+                    }
+                    recipe_json = json.dumps(recipe_payload, indent=2, default=str).encode("utf-8")
+                    dl_col2.download_button(
+                        "Download Recipe (.json)",
+                        data=recipe_json,
+                        file_name="cleaning_recipe.json",
+                        mime="application/json",
+                    )
+
+        with st.container():
+            st.header("Step 4: Batch Clean Multiple Files")
+            st.caption(
+                "Apply the steps checked above (or an uploaded recipe) to many CSVs "
+                "at once. The execution core (`run_pipeline`) is unchanged — only "
+                "this orchestration loop is new. A bad file won't stop the batch; "
+                "it's flagged in the summary table instead."
+            )
+
+            batch_steps_source = st.radio(
+                "Steps to apply to every file",
+                ["Use the checkboxes selected above", "Use an uploaded recipe (.json)"],
+                key="batch_steps_source",
+                horizontal=True,
+            )
+
+            batch_steps = None
+            if batch_steps_source == "Use the checkboxes selected above":
+                batch_steps = steps
+            else:
+                batch_recipe_file = st.file_uploader("Recipe for batch run", type=["json"], key="batch_recipe_uploader")
+                if batch_recipe_file is not None:
+                    try:
+                        batch_recipe = json.loads(batch_recipe_file.getvalue().decode("utf-8"))
+                        batch_steps = batch_recipe.get("steps", []) if isinstance(batch_recipe, dict) else batch_recipe
+                    except (json.JSONDecodeError, AttributeError, TypeError) as e:
+                        st.error(f"❌ Could not parse recipe file: {e}")
+
+            batch_files = st.file_uploader(
+                "Upload CSV files to batch clean",
+                type=["csv"],
+                accept_multiple_files=True,
+                key="batch_files_uploader",
+            )
+
+            if st.button("🧹 Run Batch Clean", key="run_batch_clean_btn"):
+                if not batch_files:
+                    st.warning("Upload at least one CSV file first.")
+                elif not batch_steps:
+                    st.warning("No steps selected — check at least one step above, or upload a recipe.")
+                else:
+                    if "session_id" not in st.session_state:
+                        st.session_state.session_id = str(uuid.uuid4())
+                    batch_session_id = st.session_state.session_id
+                    log_session(batch_session_id)
+
+                    summary_rows = []
+                    zip_buffer = BytesIO()
+                    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+                        for batch_file in batch_files:
+                            fname = batch_file.name
+                            if not check_upload_size(getattr(batch_file, "size", None), label=fname):
+                                summary_rows.append({
+                                    "File": fname, "Status": "❌ Skipped",
+                                    "Rows (before)": None, "Rows (after)": None,
+                                    "Cols (before)": None, "Cols (after)": None,
+                                    "Error": "File too large",
+                                })
+                                continue
+                            try:
+                                batch_df = pd.read_csv(batch_file)
+                                if not check_row_count(batch_df, label=fname):
+                                    summary_rows.append({
+                                        "File": fname, "Status": "❌ Skipped",
+                                        "Rows (before)": len(batch_df), "Rows (after)": None,
+                                        "Cols (before)": len(batch_df.columns), "Cols (after)": None,
+                                        "Error": "Too many rows",
+                                    })
+                                    continue
+
+                                log_file(batch_session_id, fname, f"<batch upload: {fname}>")
+                                batch_cleaned = run_pipeline(batch_df.copy(), batch_steps)
+
+                                out_name = f"cleaned_{Path(fname).stem}.csv"
+                                out_bytes = sanitize_for_csv(batch_cleaned).to_csv(index=False).encode("utf-8")
+                                zf.writestr(out_name, out_bytes)
+
+                                summary_rows.append({
+                                    "File": fname, "Status": "✅ Cleaned",
+                                    "Rows (before)": len(batch_df), "Rows (after)": len(batch_cleaned),
+                                    "Cols (before)": len(batch_df.columns), "Cols (after)": len(batch_cleaned.columns),
+                                    "Error": None,
+                                })
+                                log_event(batch_session_id, "batch_file_cleaned", fname)
+                            except Exception as e:
+                                summary_rows.append({
+                                    "File": fname, "Status": "❌ Failed",
+                                    "Rows (before)": None, "Rows (after)": None,
+                                    "Cols (before)": None, "Cols (after)": None,
+                                    "Error": str(e),
+                                })
+                                log_event(batch_session_id, "batch_file_failed", f"{fname}: {e}")
+
+                    st.session_state.batch_summary = summary_rows
+                    st.session_state.batch_zip = zip_buffer.getvalue()
+                    log_event(batch_session_id, "batch_clean_completed", f"{len(batch_files)} file(s)")
+
+            if "batch_summary" in st.session_state:
+                st.subheader("Batch Results")
+                st.dataframe(pd.DataFrame(st.session_state.batch_summary), use_container_width=True)
+                if st.session_state.get("batch_zip"):
+                    st.download_button(
+                        "Download Cleaned Files (.zip)",
+                        data=st.session_state.batch_zip,
+                        file_name="batch_cleaned_output.zip",
+                        mime="application/zip",
+                    )
+
+
 
 ##################################################################################################
 ##################################Metadata Inference & Usability##################################
@@ -873,6 +1038,7 @@ with tab2:
             st.session_state.df = df.copy()
             st.session_state.df_history = []
             st.session_state.pop("metadata_df", None)
+            st.session_state.pop("quality_report", None)
             st.session_state["show_tree"] = False
             st.session_state["executed_actions"] = set()
             st.session_state["agraph_tree_data"] = None
@@ -923,6 +1089,40 @@ with tab2:
 
             st.subheader("Column Type Inference")
             st.dataframe(metadata_df)
+
+            st.subheader("📊 Data Quality Report")
+            if st.button("Generate Quality Report"):
+                st.session_state.quality_report = generate_quality_report(df, metadata_df)
+                log_event(st.session_state.session_id, "quality_report_generated",
+                           f"overall_score={st.session_state.quality_report['overall_score']}")
+
+            if "quality_report" in st.session_state:
+                report = st.session_state.quality_report
+
+                score = report["overall_score"]
+                badge = "🟢" if score >= 80 else ("🟡" if score >= 50 else "🔴")
+                score_col, rows_col, dup_col, miss_col = st.columns(4)
+                score_col.metric(f"{badge} Overall Score", f"{score:.1f} / 100")
+                rows_col.metric("Rows × Columns", f"{report['total_rows']:,} × {report['total_columns']}")
+                dup_col.metric("Duplicate Rows", f"{report['duplicate_rows']:,} ({report['duplicate_pct']:.1f}%)")
+                miss_col.metric("Avg. Missing", f"{report['missing_pct_overall']:.1f}%")
+
+                if report["flagged_columns"]:
+                    st.markdown(f"**{len(report['flagged_columns'])} column(s) flagged for attention:**")
+                    st.dataframe(pd.DataFrame(report["flagged_columns"]), use_container_width=True)
+                else:
+                    st.success("No column-level issues detected.")
+
+                with st.expander("Full per-column breakdown"):
+                    st.dataframe(pd.DataFrame(report["columns"]), use_container_width=True)
+
+                report_json = json.dumps(report, indent=2).encode("utf-8")
+                st.download_button(
+                    "Download Report (.json)",
+                    data=report_json,
+                    file_name="data_quality_report.json",
+                    mime="application/json",
+                )
 
             st.subheader("Basic Suggested Visualizations")
             st.markdown("### Choose columns to visualize")

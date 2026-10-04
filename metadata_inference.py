@@ -406,6 +406,121 @@ def analyze_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     )
     return pd.DataFrame(results)
 
+
+def _column_outlier_pct(series: pd.Series, iqr_multiplier: float = 1.5):
+    """IQR-based outlier rate for a single numeric column, mirroring the
+    fence logic in pipeline_logic.remove_outliers. Returns None when the
+    column has no spread to compute a fence from."""
+    non_null = series.dropna()
+    if non_null.empty:
+        return None
+    Q1 = non_null.quantile(0.25)
+    Q3 = non_null.quantile(0.75)
+    IQR = Q3 - Q1
+    if IQR == 0:
+        return 0.0
+    lower = Q1 - iqr_multiplier * IQR
+    upper = Q3 + iqr_multiplier * IQR
+    outliers = non_null[(non_null < lower) | (non_null > upper)]
+    return float(len(outliers) / len(non_null) * 100)
+
+
+def generate_quality_report(df: pd.DataFrame, inferred_types_df: pd.DataFrame) -> dict:
+    """Aggregate a dataset-level data-quality report from data already
+    gathered during inference (``analyze_dataframe``).
+
+    Reuses:
+      - the per-column ``Inferred Type`` from ``inferred_types_df`` (so
+        null-heavy / constant / mixed-ambiguous columns are already
+        detected by ``infer_column_type``),
+      - the same IQR-fence logic ``pipeline_logic.remove_outliers`` uses,
+        for a per-numeric-column outlier rate.
+
+    Returns a plain dict (JSON-serializable, aside from numpy scalar
+    rounding which is cast to native float/int) with:
+      - ``overall_score``: 0-100 overall data-quality score.
+      - ``total_rows`` / ``total_columns``.
+      - ``missing_pct_overall``: mean % missing across all cells.
+      - ``duplicate_rows`` / ``duplicate_pct``: fully-duplicated rows.
+      - ``columns``: per-column stats + score (list of dicts).
+      - ``flagged_columns``: subset of ``columns`` with at least one
+        detected issue, for a "what needs attention" view.
+    """
+    total_rows = len(df)
+    total_cols = len(df.columns)
+    missing_pct_overall = float(df.isna().mean().mean() * 100) if total_cols else 0.0
+    duplicate_rows = int(df.duplicated().sum())
+    duplicate_pct = float(duplicate_rows / total_rows * 100) if total_rows else 0.0
+
+    numeric_cols = set(df.select_dtypes(include=np.number).columns)
+
+    column_rows = []
+    flagged_columns = []
+    per_col_scores = []
+
+    for _, row in inferred_types_df.iterrows():
+        col = row["Column"]
+        col_type = row["Inferred Type"]
+        if col not in df.columns:
+            continue
+
+        miss_pct = float(df[col].isna().mean() * 100)
+        uniq_pct = float(df[col].nunique(dropna=True) / total_rows * 100) if total_rows else 0.0
+        outlier_pct = _column_outlier_pct(df[col]) if col in numeric_cols else None
+
+        score = 100.0
+        issues = []
+
+        if col_type == "Null-heavy" or miss_pct > 50:
+            score -= 50
+            issues.append("high missingness")
+        elif miss_pct > 5:
+            score -= 15
+            issues.append("some missing values")
+
+        if col_type == "Constant / Low Variance":
+            score -= 40
+            issues.append("constant / low variance")
+
+        if col_type == "Mixed / Ambiguous":
+            score -= 20
+            issues.append("mixed / ambiguous types")
+
+        if outlier_pct is not None and outlier_pct > 5:
+            score -= min(20.0, outlier_pct)
+            issues.append(f"{outlier_pct:.1f}% outlier rows")
+
+        score = max(0.0, min(100.0, score))
+        per_col_scores.append(score)
+
+        entry = {
+            "Column": col,
+            "Inferred Type": col_type,
+            "% Missing": round(miss_pct, 1),
+            "% Unique": round(uniq_pct, 1),
+            "% Outliers": round(outlier_pct, 1) if outlier_pct is not None else None,
+            "Score": round(score, 1),
+        }
+        column_rows.append(entry)
+        if issues:
+            flagged_columns.append({**entry, "Issues": ", ".join(issues)})
+
+    overall_score = float(np.mean(per_col_scores)) if per_col_scores else 100.0
+    # Dataset-level penalty for duplicate rows, on top of the per-column average.
+    overall_score = max(0.0, overall_score - min(20.0, duplicate_pct))
+
+    return {
+        "overall_score": round(overall_score, 1),
+        "total_rows": total_rows,
+        "total_columns": total_cols,
+        "missing_pct_overall": round(missing_pct_overall, 2),
+        "duplicate_rows": duplicate_rows,
+        "duplicate_pct": round(duplicate_pct, 2),
+        "columns": column_rows,
+        "flagged_columns": flagged_columns,
+    }
+
+
 def custom_cleaning_via_llm(user_instruction: str, df: pd.DataFrame) -> Tuple[pd.DataFrame, str]:
     """
     Calls the LLM with a strict prompt, parses returned code from JSON, executes it on df.
