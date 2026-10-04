@@ -1,5 +1,5 @@
 import logging
-from safe_exec import safe_exec
+from safe_exec import run_sandboxed
 import os
 import pandas as pd
 import numpy as np
@@ -456,41 +456,9 @@ PROMPT LENGTH (characters): {len(user_instruction) + len(formatted_df)}
         if not code_str:
             raise ValueError("LLM response did not contain executable code.")
 
-        global_vars = {
-            "pd": pd,
-            "np": np,
-            "re": re,
-            "datetime": datetime,
-            "SimpleImputer": SimpleImputer,
-            "StandardScaler": StandardScaler,
-            "MinMaxScaler": MinMaxScaler,
-            "Binarizer": Binarizer,
-            "SMOTE": SMOTE,
-            "RandomOverSampler": RandomOverSampler,
-            "RandomUnderSampler": RandomUnderSampler,
-            "nltk": nltk,
-            "geopy": __import__("geopy"),
-            "geodesic": geodesic,
-            # Fall back to an empty set if the NLTK corpus is unavailable.
-            "stops": ENGLISH_STOPWORDS,
-            "word_tokenize": word_tokenize,
-            "tldextract": tldextract
-        }
+        cleaned_df = run_sandboxed("custom_cleaning", code_str, df.copy())
 
-        # transformers/torch are intentionally excluded from requirements-prod.txt
-        # (nothing in the app itself needs them), so only expose it to
-        # LLM-generated code when it's actually installed rather than importing
-        # it unconditionally on every call and crashing on the prod deployment.
-        try:
-            global_vars["transformers"] = __import__("transformers")
-        except ImportError:
-            pass
-
-        local_vars = {"df": df.copy()}
-
-        safe_exec(code_str, global_vars, local_vars)
-
-        return local_vars["df"], code_str
+        return cleaned_df, code_str
 
     except Exception as e:
         raise RuntimeError(f"Failed to apply LLM cleaning: {e}")
@@ -522,33 +490,10 @@ def call_llm(prompt: str, temperature=0.3, max_tokens=2000) -> str:
 
 def execute_plot_code(code: str, df: pd.DataFrame):
     """
-    Executes LLM-generated plot code on a given DataFrame using a safe, scoped environment.
+    Executes LLM-generated plot code in an isolated subprocess (see
+    ``safe_exec.run_sandboxed``) and returns the rendered chart as PNG bytes.
     """
-    global_vars = {
-        "pd": pd,
-        "np": np,
-        "re": re,
-        "plt": plt,
-        "sns": sns,
-        "datetime": datetime,
-        "SimpleImputer": SimpleImputer,
-        "StandardScaler": StandardScaler,
-        "MinMaxScaler": MinMaxScaler,
-        "Binarizer": Binarizer,
-        "SMOTE": SMOTE,
-        "RandomOverSampler": RandomOverSampler,
-        "RandomUnderSampler": RandomUnderSampler
-    }
-
-    local_vars = {"df": df}
-
     try:
-        with contextlib.redirect_stdout(io.StringIO()):
-            safe_exec(code, global_vars, local_vars)
-
-        fig = plt.gcf()
-        fig.set_size_inches(6, 4)  
-        return fig
-
+        return run_sandboxed("plot", code, df)
     except Exception as e:
         raise RuntimeError(f"Error executing visualization code: {e}")

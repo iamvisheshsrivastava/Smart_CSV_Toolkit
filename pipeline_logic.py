@@ -15,7 +15,7 @@ A matching ``OPERATION_MAP`` dictionary maps step names (as they appear in
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
 import pandas as pd
-from safe_exec import safe_exec
+from safe_exec import run_sandboxed
 import numpy as np
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, Binarizer
 from sklearn.impute import SimpleImputer
@@ -176,20 +176,7 @@ def llm_data_cleaning(data: pd.DataFrame, params: Any) -> pd.DataFrame:
         raise ValueError("LLM Data Cleaning failed: No code provided in step parameters.")
 
     try:
-        local_vars = {"df": data.copy()}
-        global_vars = {
-            "pd": pd,
-            "np": np,
-            "SimpleImputer": SimpleImputer,
-            "StandardScaler": StandardScaler,
-            "MinMaxScaler": MinMaxScaler,
-            "Binarizer": Binarizer,
-            "SMOTE": SMOTE,
-            "RandomOverSampler": RandomOverSampler,
-            "RandomUnderSampler": RandomUnderSampler
-        }
-        safe_exec(code, global_vars, local_vars)
-        return local_vars["df"]
+        return run_sandboxed("pipeline", code, data.copy())
     except Exception as e:
         raise RuntimeError(
             f"LLM Data Cleaning failed to execute.\n\n"

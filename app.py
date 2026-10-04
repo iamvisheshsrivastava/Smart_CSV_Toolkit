@@ -23,7 +23,7 @@ via REST API, and a feedback widget.
 import os
 import socket
 import ipaddress
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote as urllib_quote
 from dotenv import load_dotenv
 
 # Load environment variables from .env file
@@ -543,7 +543,11 @@ def render_image_urls(urls):
 def render_file_links(urls):
     st.markdown("### 📎 File Links")
     for url in urls:
-        st.markdown(f"[📥 Download File]({url})", unsafe_allow_html=True)
+        if not is_safe_url(url):
+            st.warning(f"Blocked unsafe or non-public URL: {url}")
+            continue
+        safe_href = urllib_quote(url, safe=":/?&=%._-~#")
+        st.markdown(f"[📥 Download File]({safe_href})")
 
 def render_video_urls(urls):
     st.markdown("### 🎬 Video Previews")
@@ -972,10 +976,10 @@ with tab2:
                     with st.spinner("Calling LLM to generate plot..."):
                         try:
                             response = call_llm(prompt)
-                            fig = execute_plot_code(response, df)
+                            png_bytes = execute_plot_code(response, df)
                             with st.container():
                                 st.markdown("### 📊 Generated Plot")
-                                st.pyplot(fig)
+                                st.image(png_bytes)
                             log_event(st.session_state.session_id, "custom_viz_success", user_viz_prompt)
                         except Exception as e:
                             st.error(str(e))
