@@ -103,7 +103,10 @@ def _date_success_ratio(series: pd.Series, sample_n: int = 60) -> float:
         return 0.0
 
     sample   = non_null.sample(min(sample_n, len(non_null)), random_state=42)
-    fast     = pd.to_datetime(sample, errors="coerce", infer_datetime_format=True)
+    try:
+        fast     = pd.to_datetime(sample, errors="coerce")
+    except TypeError:
+        fast     = pd.to_datetime(sample, errors="coerce", infer_datetime_format=True)
     fast_ok  = fast.notna()
 
     slow_needed = sample[~fast_ok]

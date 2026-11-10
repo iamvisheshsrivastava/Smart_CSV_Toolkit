@@ -19,6 +19,7 @@ import numpy as np
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from pipeline_logic import (
+    sanitize_for_csv,
     impute_missing,
     normalize,
     scale,
@@ -511,3 +512,82 @@ class TestRunPipeline:
         result = run_pipeline(categorical_df.copy(), steps)
         assert "cat" not in result.columns
         assert "val" in result.columns
+
+
+class TestSanitizeForCsv:
+    """Unit tests for sanitize_for_csv() mitigating CSV/DDE formula injection."""
+
+    def test_escapes_formula_trigger_prefixes(self):
+        formulas = [
+            "=SUM(A1:A10)",
+            "+cmd|'/c calc'!A0",
+            "-2+3",
+            "@SUM(1,2)",
+            "\tcmd",
+            "\rcalc",
+        ]
+        safe = ["normal text", "hello world", "test_123", "SAFE", "UPPER", "lower"]
+        df = pd.DataFrame({"formulas": formulas, "safe": safe})
+        result = sanitize_for_csv(df)
+
+        assert result.loc[0, "formulas"] == "'=SUM(A1:A10)"
+        assert result.loc[1, "formulas"] == "'+cmd|'/c calc'!A0"
+        assert result.loc[2, "formulas"] == "'-2+3"
+        assert result.loc[3, "formulas"] == "'@SUM(1,2)"
+        assert result.loc[4, "formulas"] == "'\tcmd"
+        assert result.loc[5, "formulas"] == "'\rcalc"
+
+        # Safe values must not be modified
+        for idx in range(6):
+            assert result.loc[idx, "safe"] == df.loc[idx, "safe"]
+
+    def test_preserves_numeric_and_null_values(self):
+        df = pd.DataFrame({
+            "ints": [1, -5, 42],
+            "floats": [1.5, -2.5, np.nan],
+            "bools": [True, False, True],
+        })
+        result = sanitize_for_csv(df)
+
+        assert result.loc[0, "ints"] == 1
+        assert result.loc[1, "ints"] == -5
+        assert result.loc[2, "ints"] == 42
+        assert result.loc[0, "floats"] == 1.5
+        assert result.loc[1, "floats"] == -2.5
+        assert pd.isna(result.loc[2, "floats"])
+        assert bool(result.loc[0, "bools"]) is True
+        assert bool(result.loc[1, "bools"]) is False
+
+    def test_handles_empty_dataframe(self):
+        df = pd.DataFrame(columns=["a", "b"])
+        result = sanitize_for_csv(df)
+        assert result.empty
+        assert list(result.columns) == ["a", "b"]
+
+    def test_does_not_mutate_original_dataframe(self):
+        df = pd.DataFrame({"col": ["=1+1", "safe"]})
+        result = sanitize_for_csv(df)
+        assert df.loc[0, "col"] == "=1+1"
+        assert result.loc[0, "col"] == "'=1+1"
+
+    def test_works_when_map_is_used_or_fallback(self, monkeypatch):
+        df = pd.DataFrame({"col": ["=test", "safe"]})
+
+        # Test with standard map
+        res1 = sanitize_for_csv(df)
+        assert res1.loc[0, "col"] == "'=test"
+
+        # Test fallback branch when hasattr(df, 'map') is False
+        orig_hasattr = hasattr
+        def fake_hasattr(obj, name):
+            if name == "map" and isinstance(obj, pd.DataFrame):
+                return False
+            return orig_hasattr(obj, name)
+
+        # Simulate older pandas having applymap
+        if not hasattr(df, "applymap"):
+            df.applymap = df.map
+
+        monkeypatch.setattr("builtins.hasattr", fake_hasattr)
+        res2 = sanitize_for_csv(df)
+        assert res2.loc[0, "col"] == "'=test"

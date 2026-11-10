@@ -483,3 +483,21 @@ def run_pipeline(data: pd.DataFrame, steps: List[Dict[str, Any]]) -> pd.DataFram
         data = OPERATION_MAP[name](data, params)
 
     return data
+
+
+def sanitize_for_csv(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Return a copy of df with any string cell that starts with '=', '+', '-',
+    '@', tab, or carriage return prefixed with a single quote, so spreadsheet
+    apps (Excel/LibreOffice/Google Sheets) treat it as literal text instead
+    of a formula. Mitigates CSV/DDE formula injection on export.
+    Compatible across pandas 1.x, 2.x and 3.x.
+    """
+    def esc(v):
+        if isinstance(v, str) and v[:1] in ("=", "+", "-", "@", "\t", "\r"):
+            return "'" + v
+        return v
+
+    if hasattr(df, "map"):
+        return df.map(esc)
+    return df.applymap(esc)

@@ -56,7 +56,7 @@ from openai import OpenAI
 from streamlit_agraph import agraph, Config
 import streamlit.components.v1 as components
 
-from pipeline_logic import run_pipeline
+from pipeline_logic import run_pipeline, sanitize_for_csv
 from metadata_inference import analyze_dataframe, custom_cleaning_via_llm, execute_plot_code, generate_quality_report
 from cleaningDecisionTree import render_pyvis_tree, render_agraph_tree
 from pyvis.network import Network
@@ -134,6 +134,8 @@ def sanitize_for_csv(df: pd.DataFrame) -> pd.DataFrame:
         if isinstance(v, str) and v[:1] in ("=", "+", "-", "@", "\t", "\r"):
             return "'" + v
         return v
+    if hasattr(df, 'map'):
+        return df.map(esc)
     return df.applymap(esc)
 
 
