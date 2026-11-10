@@ -140,7 +140,7 @@
             "name": "size_multiplier",
             "value": "1x",
             "data_type": "int",
-            "description": "Strategy for sampling: factor by which the dataset will be augmented.",
+            "description": "Number of times to duplicate the full dataset (e.g. '2x' doubles the row count).",
             "options": ["1x", "2x", "3x", "4x", "5x"]
           }
         ]
