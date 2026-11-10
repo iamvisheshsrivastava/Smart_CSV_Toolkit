@@ -83,6 +83,18 @@ MAX_UPLOAD_BYTES = MAX_UPLOAD_MB * 1024 * 1024
 MAX_ROWS = 500_000
 
 
+def format_option_label(name: str) -> str:
+    """Return a human-readable widget label for a pipeline option name.
+
+    Option names are stored as snake_case internal identifiers (e.g.
+    ``iqr_multiplier``, ``fill_value``). Rendering them verbatim as the
+    widget label shows raw, underscore-joined keys to the user, so convert
+    them to title-case words for display while keeping the raw name for
+    the widget's ``key`` (state remains unique per step).
+    """
+    return name.replace("_", " ").title()
+
+
 def check_upload_size(size_bytes: int, label: str = "file") -> bool:
     """
     Return True if size_bytes is within MAX_UPLOAD_BYTES, otherwise show an
@@ -384,6 +396,7 @@ with tab1:
                     params = {}
                     for opt in step.get("options", []):
                         param_key = f"{step['name']}_{opt['name']}"
+                        label = format_option_label(opt["name"])
                         dtype = opt.get("data_type")
                         default = opt.get("value")
                         choices = opt.get("options", [])
@@ -401,21 +414,21 @@ with tab1:
 
                         elif dtype == "int":
                             if choices:
-                                params[opt["name"]] = st.selectbox(param_key, choices, index=choices.index(default), key=param_key)
+                                params[opt["name"]] = st.selectbox(label, choices, index=choices.index(default), key=param_key, help=opt.get("description"))
                             else:
-                                params[opt["name"]] = st.number_input(param_key, value=int(default), key=param_key)
+                                params[opt["name"]] = st.number_input(label, value=int(default), key=param_key, help=opt.get("description"))
 
                         elif dtype == "float":
                             if choices:
-                                params[opt["name"]] = st.selectbox(param_key, choices, index=choices.index(default), key=param_key)
+                                params[opt["name"]] = st.selectbox(label, choices, index=choices.index(default), key=param_key, help=opt.get("description"))
                             else:
-                                params[opt["name"]] = st.number_input(param_key, value=float(default), key=param_key)
+                                params[opt["name"]] = st.number_input(label, value=float(default), key=param_key, help=opt.get("description"))
 
                         elif dtype == "str":
                             if choices:
-                                params[opt["name"]] = st.selectbox(param_key, choices, index=choices.index(default), key=param_key)
+                                params[opt["name"]] = st.selectbox(label, choices, index=choices.index(default), key=param_key, help=opt.get("description"))
                             else:
-                                params[opt["name"]] = st.text_input(param_key, value=default, key=param_key)
+                                params[opt["name"]] = st.text_input(label, value=default, key=param_key, help=opt.get("description"))
 
                     steps.append({"name": step["name"], "params": params})
 
