@@ -1,4 +1,4 @@
-pandas>=2.0.0
+pandas>=3.1.1
 numpy
 scikit-learn
 streamlit
